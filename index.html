@@ -804,7 +804,10 @@ function readingHtml(no) {
   var html = '<div class="read-panel"><div class="rp-head"><b>🎙 소리 내어 읽기</b><span class="rp-count">' + cur + ' / ' + sents.length + '</span></div>' +
     '<div class="rp-bar"><i style="width:' + Math.round(cur / sents.length * 100) + '%"></i></div>' +
     '<p class="rp-desc">모둠원이 돌아가며 한 문장씩 또박또박 읽어요. ' +
-    (S.readMode === 'record' ? '녹음은 선생님이 들을 수 있어요.' : '읽은 사람이 아닌 다른 모둠원이 확인 버튼을 눌러요.') + '</p>';
+    (S.readMode !== 'record' ? '읽은 사람이 아닌 다른 모둠원이 확인 버튼을 눌러요.'
+      : S.saveMode === 'none' ? '녹음은 들어 보고 확인하는 데만 써요.'
+      : S.saveMode === 'all' ? '녹음은 선생님이 들을 수 있어요.'
+      : '모둠원마다 이 구역의 첫 문장 녹음은 선생님이 들을 수 있어요.') + '</p>';
   sents.forEach(function (s, i) {
     var cls = i < cur ? 'done' : i === cur ? 'cur' : 'todo';
     var who = readerOf(no, i);
@@ -832,7 +835,7 @@ function recBoxHtml(text) {
       (short ? '<span class="warn">⚠️ 너무 짧아요 (' + rec.seconds.toFixed(1) + '초). 문장을 끝까지 읽어 주세요.</span>' : '') +
       '<button class="btn ghost" onclick="recReset()"' + (up ? ' disabled' : '') + '>↺ 다시 녹음</button>' +
       '<button class="btn brass" onclick="recSend()"' + (short || up ? ' disabled' : '') + '>' + (up ? '보내는 중…' : '✅ 인증 보내기') + '</button>' +
-      '<span class="tip">한번 들어 보고, 잘 읽었으면 인증을 보내요.</span></div>';
+      '<span class="tip">한번 들어 보고, 잘 읽었으면 인증을 보내요.' + (willSave(S.read[S.station] || 0) ? ' 🎧 이 녹음은 선생님께 저장돼요.' : '') + '</span></div>';
   }
   return '<div class="recbox"><button class="rec-btn" onclick="recStart()"><span class="dotr"></span>녹음 시작</button></div>';
 }
@@ -855,7 +858,8 @@ function recStart() {
   }
   getMic().then(function (stream) {
     var mime = pickMime();
-    var mr = new MediaRecorder(stream, mime ? { mimeType: mime, audioBitsPerSecond: 32000 } : undefined);
+    // 말소리용으로 작게 (시트 칸에 나눠 저장하므로 20초 안쪽이 들어가게)
+    var mr = new MediaRecorder(stream, mime ? { mimeType: mime, audioBitsPerSecond: 12000 } : undefined);
     var chunks = [];
     mr.ondataavailable = function (e) { if (e.data && e.data.size) chunks.push(e.data); };
     mr.onstop = function () {
@@ -869,7 +873,7 @@ function recStart() {
     rec.timer = setInterval(function () {
       var el = $('recSec'), sec = (Date.now() - rec.t0) / 1000;
       if (el) el.textContent = sec.toFixed(1);
-      if (sec >= 40) recStop();   // 너무 길면 자동으로 멈춤
+      if (sec >= 20) { recStop(); toast('20초가 넘어서 녹음을 멈췄어요.'); }
     }, 100);
   }).catch(function () {
     // Apps Script 화면은 구글의 틀(iframe) 안이라 마이크가 막혀 있음 → 녹음용 주소로 열어야 함
@@ -892,18 +896,26 @@ function recReset() {
   render();
 }
 
+/** 이 문장 녹음을 선생님 시트에 저장하는지 (서버의 shouldSave_와 같은 기준) */
+function willSave(idx) {
+  if (S.readMode !== 'record' || S.saveMode === 'none') return false;
+  return S.saveMode === 'all' || idx < Math.max(1, S.members.length);
+}
+
 function recSend() {
   if (rec.status !== 'done') return;
   var no = S.station, idx = S.read[no] || 0, reader = readerOf(no, idx);
   var r = rec;
   rec.status = 'up'; render();
-  var fr = new FileReader();
-  fr.onload = function () {
-    var data = String(fr.result).split(',')[1];
+  var send = function (data) {
     call('submitReading', S.code, no, idx, reader, { data: data, mime: r.mime, seconds: r.seconds })
       .then(afterReading)
       .catch(function (e) { rec.status = 'done'; render(); toast(errMsg(e)); });
   };
+  // 저장하지 않는 문장은 길이만 보내고 녹음 내용은 올리지 않음
+  if (!willSave(idx)) { send(''); return; }
+  var fr = new FileReader();
+  fr.onload = function () { send(String(fr.result).split(',')[1]); };
   fr.readAsDataURL(r.blob);
 }
 
